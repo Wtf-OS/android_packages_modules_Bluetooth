@@ -87,7 +87,9 @@ class HidlHci : public HciBackend {
 public:
   HidlHci(Handler* module_handler) {
     log::info("Trying to find a HIDL interface");
-    const int32_t timeout_ms = get_adjusted_timeout(500);
+    // msm8916/pronto probes take ~1s each (slow hwservicemanager + binder);
+    // give legacy fallback ample budget instead of the default 0.5-1s.
+    const int32_t timeout_ms = get_adjusted_timeout(5000);
 
     auto get_service_alarm = new os::Alarm(module_handler);
     get_service_alarm->Schedule(
@@ -116,11 +118,18 @@ public:
                     timeout_ms),
             std::chrono::milliseconds(timeout_ms));
 
-    hci_1_1_ = IBluetoothHci_1_1::getService();
+    // Legacy 1.0-only HALs (e.g. msm8916 pronto): getService() blocks forever
+    // waiting for a 1.1 instance that will never appear, tripping the alarm
+    // above. Probe 1.1 without blocking, fall back to 1.0 (registered).
+    log::info("Probing for 1.1 HAL (non-blocking)");
+    hci_1_1_ = IBluetoothHci_1_1::tryGetService();
+    log::info("1.1 probe done, found: {}", hci_1_1_ != nullptr);
     if (hci_1_1_) {
       hci_ = hci_1_1_;
     } else {
-      hci_ = IBluetoothHci_1_0::getService();
+      log::info("Falling back to 1.0 HAL");
+      hci_ = IBluetoothHci_1_0::tryGetService();
+      log::info("1.0 probe done, found: {}", hci_ != nullptr);
     }
 
     get_service_alarm->Cancel();
